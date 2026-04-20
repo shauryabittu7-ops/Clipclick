@@ -1,0 +1,91 @@
+/* Fontshare premium caption fonts — self-hosted via Fontshare's CDN,
+   loaded lazily with font-display: swap. Latin only, ~450 KB combined.
+   MUST come before tailwindcss import per CSS @import ordering rules. */
+@import url("https://api.fontshare.com/v2/css?f[]=satoshi@300,500,700,900&f[]=clash-display@500,700&f[]=general-sans@500,600&f[]=cabinet-grotesk@700,900&f[]=nohemi@600,900&f[]=uncut-sans@700&f[]=gambetta@400i,700i&f[]=boska@400i,700&display=swap");
+@import "tailwindcss";
+
+:root {
+  --bg: #0a0a0a;
+  --bg-elevated: #111111;
+  --bg-panel: #141414;
+  --border: #1f1f1f;
+  --border-strong: #2a2a2a;
+  --fg: #ededed;
+  --fg-muted: #8a8a8a;
+  --accent: #fd5a0e;
+  --accent-hover: #ff6b24;
+  --blue: #3b82f6;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-panel: var(--bg-panel);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --font-sans: var(--font-epilogue), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono);
+  --font-bangers: var(--font-bangers);
+  --font-jetbrains: var(--font-jetbrains);
+  --font-playfair: var(--font-playfair);
+  --font-inter: var(--font-inter);
+}
+
+/* Caption font tokens — consumed by CaptionStyle.font strings. */
+:root {
+  --caption-satoshi: "Satoshi", system-ui, sans-serif;
+  --caption-clash: "Clash Display", "Playfair Display", serif;
+  --caption-general: "General Sans", "Inter", system-ui, sans-serif;
+  --caption-cabinet: "Cabinet Grotesk", "Inter", system-ui, sans-serif;
+  --caption-nohemi: "Nohemi", "Inter", system-ui, sans-serif;
+  --caption-uncut: "Uncut Sans", "Inter", system-ui, sans-serif;
+  --caption-gambetta: "Gambetta", "Playfair Display", serif;
+  --caption-boska: "Boska", "Playfair Display", serif;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a3a;
+}
+
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+}
+
+.btn-accent {
+  background: var(--accent);
+  color: #fff;
+  transition: background 0.15s ease;
+}
+.btn-accent:hover {
+  background: var(--accent-hover);
+}
