@@ -1,113 +1,95 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { PixiRenderer } from "@/lib/compositor/PixiRenderer";
 import { useEditor } from "@/lib/state/editorStore";
-import { PRESETS_BY_ID } from "@/lib/captions/presets";
-import CursorsOverlay from "./CursorsOverlay";
+import { Video } from "lucide-react";
 
 export default function Canvas() {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rendererRef = useRef<PixiRenderer | null>(null);
-  const videoElsRef = useRef<Map<string, HTMLVideoElement>>(new Map());
-  const [rendererReady, setRendererReady] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const timeline = useEditor((s) => s.timeline);
   const playhead = useEditor((s) => s.playhead);
+  const playing = useEditor((s) => s.playing);
   const tick = useEditor((s) => s.tick);
 
-  // Init renderer
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    const meta = timeline?.meta;
-    const w = (meta?.get("width") as number) ?? 1920;
-    const h = (meta?.get("height") as number) ?? 1080;
-    const r = new PixiRenderer();
-    rendererRef.current = r;
-    setRendererReady(false);
-    r.init(canvasRef.current, { width: w, height: h })
-      .then(() => {
-        r.setCaptionStyleResolver((id) => PRESETS_BY_ID[id] ?? null);
-        setRendererReady(true);
-      })
-      .catch((e) => console.error("Pixi init failed", e));
-    return () => {
-      setRendererReady(false);
-      r.destroy();
-      rendererRef.current = null;
-    };
-  }, [timeline]);
+  // The active video clip at the current playhead
+  const [activeVideo, setActiveVideo] = useState<{
+    url: string;
+    sourceIn: number;
+    clipStart: number;
+  } | null>(null);
 
-  // Responsive resize — fit canvas into wrapper while preserving aspect
+  // Resolve which clip is active right now
   useEffect(() => {
-    const wrap = wrapRef.current;
-    const cvs = canvasRef.current;
-    if (!wrap || !cvs || !timeline) return;
-    const w = (timeline.meta.get("width") as number) ?? 1920;
-    const h = (timeline.meta.get("height") as number) ?? 1080;
-    const ratio = w / h;
-    const ro = new ResizeObserver(() => {
-      const aw = wrap.clientWidth - 32;
-      const ah = wrap.clientHeight - 32;
-      let cw = aw;
-      let ch = aw / ratio;
-      if (ch > ah) {
-        ch = ah;
-        cw = ah * ratio;
-      }
-      cvs.style.width = `${cw}px`;
-      cvs.style.height = `${ch}px`;
-    });
-    ro.observe(wrap);
-    return () => ro.disconnect();
-  }, [timeline]);
-
-  // Attach videos for new video clips — only after Pixi is fully initialised
-  useEffect(() => {
-    if (!timeline || !rendererReady || !rendererRef.current) return;
+    if (!timeline) { setActiveVideo(null); return; }
     const clips = Array.from(timeline.clips.values());
-    for (const clip of clips) {
-      if (clip.kind !== "video" || !clip.assetId) continue;
-      if (videoElsRef.current.has(clip.id)) continue;
-      const asset = timeline.assets.get(clip.assetId);
-      if (!asset?.url) continue;
-      const v = document.createElement("video");
-      v.src = asset.url;
-      v.crossOrigin = "anonymous";
-      v.muted = true;
-      v.playsInline = true;
-      v.preload = "auto";
-      v.addEventListener("loadeddata", () => {
-        rendererRef.current?.attachVideo(clip.id, v);
-      });
-      videoElsRef.current.set(clip.id, v);
+    const active = clips.find(
+      (c) =>
+        c.kind === "video" &&
+        playhead >= c.start &&
+        playhead < c.start + c.duration
+    );
+    if (!active) { setActiveVideo(null); return; }
+    const asset = active.assetId ? timeline.assets.get(active.assetId) : null;
+    if (!asset?.url) { setActiveVideo(null); return; }
+    setActiveVideo({ url: asset.url, sourceIn: active.sourceIn, clipStart: active.start });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeline, playhead, tick]);
+
+  // Sync the <video> element to the playhead + play/pause state
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !activeVideo) return;
+
+    const target = activeVideo.sourceIn + (playhead - activeVideo.clipStart);
+    if (Math.abs(v.currentTime - target) > 0.1) {
+      v.currentTime = target;
     }
-  }, [timeline, tick, rendererReady]);
+    if (playing) {
+      v.play().catch(() => {});
+    } else {
+      v.pause();
+    }
+  }, [playhead, playing, activeVideo]);
 
-  // Sync captions → compositor
-  useEffect(() => {
-    if (!timeline || !rendererRef.current) return;
-    rendererRef.current.setCaptionSegments(timeline.captions.toArray());
-  }, [tick, timeline]);
-
-  // Sync playhead → compositor
-  useEffect(() => {
-    if (!timeline || !rendererRef.current) return;
-    const clips = Array.from(timeline.clips.values());
-    rendererRef.current.updateFromTimeline(clips, playhead);
-  }, [playhead, tick, timeline]);
+  const hasClips = timeline
+    ? Array.from(timeline.clips.values()).some((c) => c.kind === "video")
+    : false;
 
   return (
     <div
       ref={wrapRef}
-      className="min-h-0 bg-[#050505] grid place-items-center relative"
+      className="min-h-0 bg-[#050505] grid place-items-center relative overflow-hidden"
     >
-      <canvas
-        ref={canvasRef}
-        className="rounded-lg shadow-[0_0_60px_rgba(0,0,0,0.6)]"
-      />
-      <CursorsOverlay />
+      {activeVideo ? (
+        /* ── Live video preview ── */
+        <video
+          ref={videoRef}
+          key={activeVideo.url}
+          src={activeVideo.url}
+          className="max-w-full max-h-full object-contain rounded-sm"
+          style={{ maxHeight: "calc(100% - 16px)", maxWidth: "calc(100% - 16px)" }}
+          muted
+          playsInline
+          preload="auto"
+        />
+      ) : hasClips ? (
+        /* ── Has clips but playhead is in a gap ── */
+        <div className="flex flex-col items-center gap-2 text-[var(--fg-muted)] select-none">
+          <Video size={32} strokeWidth={1} />
+          <p className="text-xs">Move the playhead over a clip to preview</p>
+        </div>
+      ) : (
+        /* ── Empty state ── */
+        <div className="flex flex-col items-center gap-3 text-[var(--fg-muted)] select-none">
+          <div className="w-16 h-16 rounded-full border-2 border-dashed border-[var(--border-strong)] flex items-center justify-center">
+            <Video size={24} strokeWidth={1.5} />
+          </div>
+          <p className="text-sm font-medium text-[var(--fg)]">Drop a video to start</p>
+          <p className="text-xs opacity-60">Drag an MP4 onto the Upload panel →</p>
+        </div>
+      )}
     </div>
   );
 }
