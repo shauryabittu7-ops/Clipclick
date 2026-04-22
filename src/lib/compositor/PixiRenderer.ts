@@ -63,6 +63,8 @@ export class PixiRenderer {
   }
 
   attachVideo(clipId: string, video: HTMLVideoElement) {
+    // Guard: Pixi stage must be ready before we can add display objects
+    if (!this.ready) return;
     this.videoEls.set(clipId, video);
     const tex = Texture.from(video);
     let sprite = this.sprites.get(clipId);
@@ -70,7 +72,8 @@ export class PixiRenderer {
       sprite = new Sprite(tex);
       sprite.anchor.set(0.5);
       this.sprites.set(clipId, sprite);
-      this.stage.addChild(sprite);
+      // Insert at index 0 so video sprites always render beneath captions layer
+      this.stage.addChildAt(sprite, 0);
     } else {
       sprite.texture = tex;
     }

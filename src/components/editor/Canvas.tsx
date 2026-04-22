@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PixiRenderer } from "@/lib/compositor/PixiRenderer";
 import { useEditor } from "@/lib/state/editorStore";
 import { PRESETS_BY_ID } from "@/lib/captions/presets";
@@ -11,6 +11,7 @@ export default function Canvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<PixiRenderer | null>(null);
   const videoElsRef = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const [rendererReady, setRendererReady] = useState(false);
 
   const timeline = useEditor((s) => s.timeline);
   const playhead = useEditor((s) => s.playhead);
@@ -24,12 +25,15 @@ export default function Canvas() {
     const h = (meta?.get("height") as number) ?? 1080;
     const r = new PixiRenderer();
     rendererRef.current = r;
+    setRendererReady(false);
     r.init(canvasRef.current, { width: w, height: h })
       .then(() => {
         r.setCaptionStyleResolver((id) => PRESETS_BY_ID[id] ?? null);
+        setRendererReady(true);
       })
       .catch((e) => console.error("Pixi init failed", e));
     return () => {
+      setRendererReady(false);
       r.destroy();
       rendererRef.current = null;
     };
@@ -59,9 +63,9 @@ export default function Canvas() {
     return () => ro.disconnect();
   }, [timeline]);
 
-  // Attach videos for new video clips
+  // Attach videos for new video clips — only after Pixi is fully initialised
   useEffect(() => {
-    if (!timeline || !rendererRef.current) return;
+    if (!timeline || !rendererReady || !rendererRef.current) return;
     const clips = Array.from(timeline.clips.values());
     for (const clip of clips) {
       if (clip.kind !== "video" || !clip.assetId) continue;
@@ -79,7 +83,7 @@ export default function Canvas() {
       });
       videoElsRef.current.set(clip.id, v);
     }
-  }, [timeline, tick]);
+  }, [timeline, tick, rendererReady]);
 
   // Sync captions → compositor
   useEffect(() => {

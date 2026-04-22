@@ -17,7 +17,7 @@ export default function EditorShell() {
 
   useEffect(() => {
     init("default");
-  }, [init]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!timeline) {
     return (
