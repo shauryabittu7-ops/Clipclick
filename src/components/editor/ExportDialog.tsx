@@ -3,7 +3,6 @@
 import { useRef, useState } from "react";
 import { X, Download, Loader2 } from "lucide-react";
 import { useEditor } from "@/lib/state/editorStore";
-import { exportTimeline } from "@/lib/export/webcodecs-exporter";
 
 const PRESETS = [
   { id: "1080p30", label: "1080p · 30fps", width: 1920, height: 1080, fps: 30, bitrate: 8_000_000 },
@@ -37,6 +36,8 @@ export default function ExportDialog() {
       if (!("VideoEncoder" in window)) {
         throw new Error("WebCodecs unavailable — use Chrome, Edge, or Safari 17+.");
       }
+      // Dynamic import — keeps Pixi.js (~2 MB) out of the initial page bundle
+      const { exportTimeline } = await import("@/lib/export/webcodecs-exporter");
       const blob = await exportTimeline(timeline, {
         width: preset.width,
         height: preset.height,

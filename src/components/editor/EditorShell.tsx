@@ -30,9 +30,9 @@ export default function EditorShell() {
   return (
     <div className="h-full w-full grid grid-rows-[48px_1fr] bg-[var(--bg)] text-[var(--fg)]">
       <TopBar />
-      <div className="min-h-0 grid grid-cols-[auto_1fr_auto]">
+      <div className="min-h-0 grid grid-cols-[auto_1fr_auto] overflow-hidden">
         <LeftNav />
-        <div className="min-w-0 grid grid-rows-[1fr_48px_260px]">
+        <div className="min-w-0 min-h-0 grid grid-rows-[1fr_48px_220px] overflow-hidden">
           <Canvas />
           <Transport />
           <Timeline />
