@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Upload, Plus, AlertCircle } from "lucide-react";
 import { useEditor } from "@/lib/state/editorStore";
-import { probeMedia } from "@/lib/media/proxy";
+import { probeMedia, generateWaveformPeaks } from "@/lib/media/proxy";
+import { saveMediaFile, loadMediaFile } from "@/lib/media/mediaStore";
 import type { AssetData, ClipData, ClipKind } from "@/lib/timeline/YjsTimeline";
 
 function nanoid() {
@@ -18,29 +19,51 @@ function isStaleBlobUrl(url: string | undefined): boolean {
 export default function UploadPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const timeline = useEditor((s) => s.timeline);
+  const setWaveform = useEditor((s) => s.setWaveform);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   useEditor((s) => s.tick); // re-render on asset/clip change
 
   const assets = timeline ? Array.from(timeline.assets.values()) : [];
 
-  // ── Purge stale blob-URL assets on first mount ────────────────────────────
-  // Blob URLs are invalidated on page reload. Remove them and their clips so
-  // the timeline starts clean instead of showing un-loadable footage.
+  // ── Restore or purge stale blob-URL assets AFTER IndexedDB has loaded ─────
+  // Blob URLs are session-scoped and die on page reload. The Yjs IndexedDB
+  // provider loads asynchronously — we must wait for timeline.synced before
+  // scanning so we see the real persisted state (not an empty map).
+  //
+  // For each stale asset we first try to restore it from our separate
+  // mediaStore (which holds the raw file bytes). If found we recreate a fresh
+  // blob URL in-place. Only if the file is missing do we remove the asset.
   useEffect(() => {
     if (!timeline) return;
-    const staleIds = Array.from(timeline.assets.values())
-      .filter((a) => isStaleBlobUrl(a.url))
-      .map((a) => a.id);
-    if (staleIds.length === 0) return;
+    let cancelled = false;
 
-    const staleSet = new Set(staleIds);
-    // Remove clips that reference stale assets
-    Array.from(timeline.clips.values())
-      .filter((c) => c.assetId && staleSet.has(c.assetId))
-      .forEach((c) => timeline.removeClip(c.id));
-    // Remove the stale assets themselves
-    staleIds.forEach((id) => timeline.assets.delete(id));
+    timeline.synced.then(async () => {
+      if (cancelled) return;
+
+      const staleAssets = Array.from(timeline.assets.values()).filter((a) =>
+        isStaleBlobUrl(a.url)
+      );
+      if (staleAssets.length === 0) return;
+
+      for (const asset of staleAssets) {
+        if (cancelled) break;
+        const stored = await loadMediaFile(asset.id);
+        if (stored) {
+          // Recreate fresh blob URL from persisted bytes
+          const freshUrl = URL.createObjectURL(stored.blob);
+          timeline.assets.set(asset.id, { ...asset, url: freshUrl });
+        } else {
+          // File bytes not in store — remove clips + asset
+          Array.from(timeline.clips.values())
+            .filter((c) => c.assetId === asset.id)
+            .forEach((c) => timeline.removeClip(c.id));
+          timeline.assets.delete(asset.id);
+        }
+      }
+    });
+
+    return () => { cancelled = true; };
   }, [timeline]);
 
   // ── Core upload handler ───────────────────────────────────────────────────
@@ -69,8 +92,19 @@ export default function UploadPanel() {
           width: info.width,
           height: info.height,
         };
+
+        // Persist raw bytes so the blob URL can be recreated on next reload
+        await saveMediaFile(asset.id, file, file.name);
+
         timeline.addAsset(asset);
         addAssetToTimeline(asset);
+
+        // Generate waveform peaks async (don't block UI)
+        if (kind === "audio" || kind === "video") {
+          generateWaveformPeaks(file, 400).then((peaks) => {
+            if (peaks.length > 0) setWaveform(asset.id, peaks);
+          });
+        }
       }
     } finally {
       setBusy(false);
@@ -117,6 +151,9 @@ export default function UploadPanel() {
     }
   }
 
+  // Only show the stale warning for assets that truly can't be restored
+  // (i.e. we don't have their bytes in mediaStore). We optimistically hide
+  // the warning — restoration happens async after synced resolves.
   const staleCount = assets.filter((a) => isStaleBlobUrl(a.url)).length;
 
   return (
@@ -153,13 +190,11 @@ export default function UploadPanel() {
         onChange={(e) => onFiles(e.target.files)}
       />
 
-      {/* ── Stale session warning ── */}
+      {/* ── Stale session warning (only while restoring) ── */}
       {staleCount > 0 && (
         <div className="flex items-start gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
           <AlertCircle size={13} className="mt-0.5 shrink-0" />
-          <span>
-            {staleCount} file{staleCount > 1 ? "s" : ""} from a previous session — re-upload to restore.
-          </span>
+          <span>Restoring {staleCount} file{staleCount > 1 ? "s" : ""} from previous session…</span>
         </div>
       )}
 

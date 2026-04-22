@@ -18,9 +18,157 @@ export interface ExportOptions {
   signal?: AbortSignal;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio mixing helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Decode the audio from a blob URL into an AudioBuffer at the target sample rate.
+ * Returns null if the URL has no audio track or decoding fails.
+ */
+async function decodeAudio(url: string, sampleRate: number): Promise<AudioBuffer | null> {
+  try {
+    const resp = await fetch(url);
+    const ab = await resp.arrayBuffer();
+    const ctx = new OfflineAudioContext(2, 1, sampleRate);
+    const buf = await ctx.decodeAudioData(ab);
+    return buf;
+  } catch {
+    return null; // video-only file or unsupported codec
+  }
+}
+
+/**
+ * Mix all audio-bearing clips (kind === "video" | "audio") into a single
+ * interleaved Float32Array at the given sample rate.
+ */
+async function mixAudioTracks(
+  clips: ClipData[],
+  timeline: YjsTimeline,
+  totalDuration: number,
+  sampleRate: number
+): Promise<Float32Array> {
+  const totalSamples = Math.ceil(totalDuration * sampleRate);
+  const mixed = new Float32Array(totalSamples * 2); // stereo interleaved
+
+  const audioCandidates = clips.filter(
+    (c) => (c.kind === "video" || c.kind === "audio") && !!c.assetId && !c.muted
+  );
+
+  await Promise.all(
+    audioCandidates.map(async (clip) => {
+      const asset = timeline.assets.get(clip.assetId!);
+      if (!asset?.url) return;
+
+      const buf = await decodeAudio(asset.url, sampleRate);
+      if (!buf) return;
+
+      const vol = clip.volume ?? 1;
+      const chL = buf.numberOfChannels > 0 ? buf.getChannelData(0) : null;
+      const chR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : chL;
+      if (!chL) return;
+
+      // Map timeline position → source position
+      const timelineStartSample = Math.round(clip.start * sampleRate);
+      const sourceStartSample = Math.round(clip.sourceIn * sampleRate);
+      const durationSamples = Math.round(clip.duration * sampleRate);
+
+      for (let i = 0; i < durationSamples; i++) {
+        const srcIdx = sourceStartSample + i;
+        const dstIdx = timelineStartSample + i;
+        if (dstIdx >= totalSamples) break;
+        if (srcIdx >= buf.length) break;
+        mixed[dstIdx * 2] += (chL[srcIdx] ?? 0) * vol;
+        mixed[dstIdx * 2 + 1] += ((chR ?? chL)[srcIdx] ?? 0) * vol;
+      }
+    })
+  );
+
+  return mixed;
+}
+
+/**
+ * Encode a Float32 stereo interleaved PCM buffer as AAC using WebCodecs AudioEncoder.
+ * Feeds each encoded chunk to the provided callback.
+ */
+async function encodeAac(
+  pcm: Float32Array,
+  sampleRate: number,
+  numberOfChannels: number,
+  onChunk: (chunk: EncodedAudioChunk, meta: EncodedAudioChunkMetadata | undefined) => void
+): Promise<void> {
+  if (!("AudioEncoder" in window)) return; // Safari < 17 fallback — skip audio
+
+  const FRAME_SIZE = 1024; // AAC frame size
+  const totalFrames = Math.ceil(pcm.length / (numberOfChannels * FRAME_SIZE));
+
+  const encoder = new AudioEncoder({
+    output: onChunk,
+    error: (e) => console.error("AudioEncoder error", e),
+  });
+
+  encoder.configure({
+    codec: "mp4a.40.2", // AAC-LC
+    sampleRate,
+    numberOfChannels,
+    bitrate: 128_000,
+  });
+
+  for (let f = 0; f < totalFrames; f++) {
+    const offset = f * FRAME_SIZE * numberOfChannels;
+    const remaining = pcm.length - offset;
+    const frameData = pcm.subarray(offset, offset + Math.min(FRAME_SIZE * numberOfChannels, remaining));
+
+    // AudioData requires separate channel data (planar, not interleaved)
+    const chL = new Float32Array(FRAME_SIZE);
+    const chR = new Float32Array(FRAME_SIZE);
+    for (let s = 0; s < Math.min(FRAME_SIZE, remaining / numberOfChannels); s++) {
+      chL[s] = frameData[s * numberOfChannels] ?? 0;
+      chR[s] = frameData[s * numberOfChannels + 1] ?? 0;
+    }
+
+    const planes = numberOfChannels === 1 ? [chL] : [chL, chR];
+    const frameCount = Math.min(FRAME_SIZE, Math.ceil(remaining / numberOfChannels));
+
+    const audioData = new AudioData({
+      format: "f32-planar",
+      sampleRate,
+      numberOfFrames: frameCount,
+      numberOfChannels,
+      timestamp: Math.round((f * FRAME_SIZE * 1_000_000) / sampleRate),
+      data: planes[0], // will be overwritten below via copyTo
+    });
+
+    // Re-create with proper planar data
+    const planarBuf = new Float32Array(frameCount * numberOfChannels);
+    for (let ch = 0; ch < numberOfChannels; ch++) {
+      planarBuf.set(planes[ch].subarray(0, frameCount), ch * frameCount);
+    }
+    const audioData2 = new AudioData({
+      format: "f32-planar",
+      sampleRate,
+      numberOfFrames: frameCount,
+      numberOfChannels,
+      timestamp: Math.round((f * FRAME_SIZE * 1_000_000) / sampleRate),
+      data: planarBuf,
+    });
+    audioData.close();
+
+    encoder.encode(audioData2);
+    audioData2.close();
+  }
+
+  await encoder.flush();
+  encoder.close();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main export function
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Offline export: seeks each video element frame-by-frame, composites via Pixi
- * onto an offscreen canvas, encodes with VideoEncoder, muxes into MP4.
+ * onto an offscreen canvas, encodes with VideoEncoder, mixes audio, muxes into MP4.
  */
 export async function exportTimeline(
   timeline: YjsTimeline,
@@ -34,6 +182,11 @@ export async function exportTimeline(
   const duration = clips.reduce((acc, c) => Math.max(acc, c.start + c.duration), 0);
   const totalFrames = Math.ceil(duration * fps);
   if (totalFrames === 0) throw new Error("Timeline is empty");
+
+  // ── Check audio capability ─────────────────────────────────────────────
+  const hasAudioEncoder = "AudioEncoder" in window;
+  const SAMPLE_RATE = 48_000;
+  const NUM_CHANNELS = 2;
 
   // Offscreen rendering canvas (Pixi draws into this)
   const canvas = document.createElement("canvas");
@@ -65,6 +218,13 @@ export async function exportTimeline(
     })
   );
 
+  // ── Pre-mix audio (done before video encoding to avoid blocking) ──────────
+  onProgress?.(0);
+  const audioPcm = hasAudioEncoder
+    ? await mixAudioTracks(clips, timeline, duration, SAMPLE_RATE)
+    : null;
+
+  // ── Set up muxer with optional audio track ────────────────────────────────
   const muxer = new Muxer({
     target: new ArrayBufferTarget(),
     video: {
@@ -73,6 +233,15 @@ export async function exportTimeline(
       height,
       frameRate: fps,
     },
+    ...(audioPcm
+      ? {
+          audio: {
+            codec: "aac",
+            sampleRate: SAMPLE_RATE,
+            numberOfChannels: NUM_CHANNELS,
+          },
+        }
+      : {}),
     fastStart: "in-memory",
   });
 
@@ -116,6 +285,7 @@ export async function exportTimeline(
   if (gradeCanvas) { gradeCanvas.width = width; gradeCanvas.height = height; }
 
   try {
+    // ── Video encoding loop ───────────────────────────────────────────────
     for (let f = 0; f < totalFrames; f++) {
       if (signal?.aborted) throw new Error("Export cancelled");
       const baseT = f / fps;
@@ -166,11 +336,21 @@ export async function exportTimeline(
       if (encoder.encodeQueueSize > 10) {
         await new Promise((r) => setTimeout(r, 0));
       }
-      onProgress?.(f / totalFrames);
+      // Video progress = 0–90%; audio encoding = 90–100%
+      onProgress?.((f / totalFrames) * (audioPcm ? 0.9 : 1));
     }
 
     await encoder.flush();
     encoder.close();
+
+    // ── Audio encoding ────────────────────────────────────────────────────
+    if (audioPcm) {
+      await encodeAac(audioPcm, SAMPLE_RATE, NUM_CHANNELS, (chunk, meta) => {
+        muxer.addAudioChunk(chunk, meta);
+      });
+      onProgress?.(1);
+    }
+
     muxer.finalize();
     onProgress?.(1);
 

@@ -52,6 +52,8 @@ export class YjsTimeline {
   readonly captions: Y.Array<CaptionSegment>;
   readonly undoManager: Y.UndoManager;
   readonly projectId: string;
+  /** Resolves once IndexedDB has finished loading the persisted state. */
+  readonly synced: Promise<void>;
   private persistence?: IndexeddbPersistence;
   private wsProvider?: WebsocketProvider;
   readonly readOnly: boolean;
@@ -71,8 +73,15 @@ export class YjsTimeline {
       { captureTimeout: 400 }
     );
 
+    // Default: immediately resolved (SSR / no persistence)
+    this.synced = Promise.resolve();
+
     if (typeof window !== "undefined") {
       this.persistence = new IndexeddbPersistence(`reel:${projectId}`, this.doc);
+      // Overwrite with a real promise that resolves when IndexedDB has loaded
+      (this as { synced: Promise<void> }).synced = new Promise<void>((r) =>
+        (this.persistence as IndexeddbPersistence).once("synced", r)
+      );
       const url = opts.wsUrl ?? process.env.NEXT_PUBLIC_YJS_WS_URL;
       if (url) {
         try {

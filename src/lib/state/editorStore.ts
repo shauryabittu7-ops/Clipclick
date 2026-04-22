@@ -11,6 +11,8 @@ interface EditorState {
   selectedClipId: string | null;
   tick: number; // bumped on Yjs change to force re-render
   exportOpen: boolean;
+  /** Audio peak data keyed by assetId — NOT stored in Yjs (too large). */
+  waveforms: Map<string, Float32Array>;
   openExport: () => void;
   closeExport: () => void;
   init: (projectId: string, opts?: { readOnly?: boolean }) => void;
@@ -19,6 +21,7 @@ interface EditorState {
   setZoom: (z: number) => void;
   select: (id: string | null) => void;
   addClip: (clip: ClipData) => void;
+  setWaveform: (assetId: string, peaks: Float32Array) => void;
 }
 
 export const useEditor = create<EditorState>((set, get) => ({
@@ -29,6 +32,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   selectedClipId: null,
   tick: 0,
   exportOpen: false,
+  waveforms: new Map(),
   openExport: () => set({ exportOpen: true }),
   closeExport: () => set({ exportOpen: false }),
   init: (projectId, opts) => {
@@ -47,4 +51,10 @@ export const useEditor = create<EditorState>((set, get) => ({
   setZoom: (z) => set({ zoom: Math.max(10, Math.min(400, z)) }),
   select: (id) => set({ selectedClipId: id }),
   addClip: (clip) => get().timeline?.addClip(clip),
+  setWaveform: (assetId, peaks) =>
+    set((s) => {
+      const next = new Map(s.waveforms);
+      next.set(assetId, peaks);
+      return { waveforms: next };
+    }),
 }));

@@ -14,6 +14,7 @@ export default function Timeline() {
   const selectedId = useEditor((s) => s.selectedClipId);
   const select = useEditor((s) => s.select);
   const tick = useEditor((s) => s.tick);
+  const waveforms = useEditor((s) => s.waveforms);
   const rulerRef = useRef<HTMLDivElement>(null);
 
   const { tracks, clips, totalDuration } = useMemo(() => {
@@ -90,6 +91,7 @@ export default function Timeline() {
                         onSelect={() => select(c.id)}
                         timeline={timeline}
                         playhead={playhead}
+                        waveform={c.assetId ? waveforms.get(c.assetId) : undefined}
                       />
                     ))}
               </div>
